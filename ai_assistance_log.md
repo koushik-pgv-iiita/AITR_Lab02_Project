@@ -1,7 +1,7 @@
 # AI Assistance Log and Research Integrity Attestation
 
 **Project Title:** Empirical Investigation of Formatting Drift ($D_{\text{formatting}}$) in Quantized Small Language Models  
-**Author:** Vedartha Sai Y (IIITA)  
+**Author:** Pasupuleti Gnana Venkata Koushik (IIITA)  
 **Document Status:** Complete / Verified  
 
 ---
@@ -61,5 +61,5 @@ The validity of this research depended on human judgment in four key areas:
 
 All reported evaluation metrics ($P_{\text{raw}}$, $P_{\text{scrubbed}}$, $P_{\text{semantic}}$, $D_{\text{formatting}}$, $Z$-scores, $p$-values) were calculated from deterministic execution logs generated on local CPU hardware. No metrics, execution logs, or citations were fabricated.
 
-**Author Signature:** Vedartha Sai Y (IIITA)  
-**Date:** October 30, 2026
+**Author Signature:** Pasupuleti Gnana Venkata Koushik (IIITA)  
+**Date:** November 12, 2026
