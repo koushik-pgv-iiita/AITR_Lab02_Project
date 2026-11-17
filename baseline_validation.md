@@ -1,7 +1,7 @@
 # Dataset and Baseline Validation Sheet
 
 **Project Title:** Tracking Performance Drift in Large Language Models Across Successive Version Updates  
-**Author:** Vedartha Sai Y (IIITA)  
+**Author:** Pasupuleti Gnana Venkata Koushik (IIITA)  
 **Selected Scope:** Quantifying Formatting Drift & Schema Compliance ($D_{\text{formatting}}$) in Quantized Local LLMs  
 **Constraint Profile:** $0.00 API Token Cost | Local Execution (`Qwen-2.5-0.5B-Instruct` & `1.5B-Instruct`) | Consumer Hardware
 
