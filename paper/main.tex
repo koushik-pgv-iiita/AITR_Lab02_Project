@@ -1,0 +1,283 @@
+\documentclass[10pt, conference, a4paper]{IEEEtran}
+
+% --- Required Packages ---
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+% Source figures carried over from main-first.tex.  Copy the prism-uploads/
+% directory beside this file to display the original artwork.  The fallback
+% keeps the paper compilable if the image files are not present.
+\newcommand{\sourcefigure}[4]{%
+\begin{figure}[!t]
+\centering
+\IfFileExists{#1}{\includegraphics[width=\columnwidth,keepaspectratio]{#1}}%
+{\fbox{\parbox[c][1.15in][c]{0.92\columnwidth}{\centering
+\textit{Source figure asset not found:}\\[-1pt]\texttt{\detokenize{#1}}}}}
+\caption{#2}
+\label{#3}
+\end{figure}
+}
+
+\begin{document}
+
+\title{Empirical Investigation of Formatting Drift: Parameter Scale and Post-Training Quantization Dynamics in Small Language Models}
+
+\author{
+\IEEEauthorblockN{Pasupuleti Gnana Venkata Koushik}
+\IEEEauthorblockA{\textit{Indian Institute of Information Technology, Allahabad (IIITA)} \\
+\textit{Department of Computer Science and Engineering} \\
+Allahabad, India \\
+Email: \texttt{pcl2026002@iiita.ac.in}}
+}
+
+\maketitle
+
+\begin{abstract}
+Structured outputs such as JSON are often used to connect large language models (LLMs) with software systems, where an output that does not follow the required schema may be unusable even if its meaning is otherwise correct. This paper examines whether post-training dynamic $\text{INT8}$ quantization affects that form of reliability in the \texttt{Qwen2.5-Instruct} model family. We compare models with $0.5\text{B}$ and $1.5\text{B}$ parameters using $N=100$ prompts grouped into three schema-complexity tiers. All runs use greedy decoding ($T=0.0$) and the same random seed ($\text{seed}=42$). The results do not support the \textbf{Parameter Capacity Buffering Hypothesis}: although both unquantized $\text{FP16}$ models achieved perfect structural compliance, quantization reduced the scrubbed pass rate to $7.0\%$ for the $0.5\text{B}$ model and to $0.0\%$ for the $1.5\text{B}$ model. The corresponding formatting drift values were $-93.0\%$ and $-100.0\%$ ($p < 10^{-15}$). Failure inspection found frequent syntax problems and cases in which the model reproduced schema definitions instead of filling them with extracted values. The results suggest that increasing parameter count alone is not sufficient to preserve schema adherence under the particular dynamic quantization procedure evaluated here.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Large Language Models, Formatting Drift, Quantization, Schema Adherence, Model Compression, Structural Robustness.
+\end{IEEEkeywords}
+
+% -------------------------------------------------------------------------
+% SECTION I: INTRODUCTION
+% -------------------------------------------------------------------------
+\section{Introduction}
+LLMs are increasingly used to convert natural-language requests into structured data. This role is common in applications that pass model responses to other software components, including multi-agent workflows and database pipelines. In these settings, producing the right information is only part of the task: the response must also satisfy the expected machine-readable format. Draft-07 JSON Schema, for example, defines rules that can be used to validate a JSON instance \cite{jsonschema}. A response containing an extra conversational introduction, a missing bracket, or another syntax error may therefore fail at the parsing stage before the information it contains can be used.
+
+Quantization is one way to reduce the memory requirements of a model and make local inference more practical. In post-training quantization, model weights are represented with lower numerical precision; this paper focuses on dynamic conversion of linear layers to an 8-bit integer representation \cite{pytorch_quant,smoothquant}. Much of the usual evaluation of quantized models centres on task accuracy or language-modelling measures such as perplexity. Those measures do not, on their own, show whether a model continues to produce outputs that satisfy a strict schema. This question is important because earlier audits have reported changes in LLM output behaviour over time, including changes to formatting that can affect downstream use \cite{chen2023,chen2024}.
+
+The central measure used in this study is \textbf{Formatting Drift} ($D_{\text{formatting}}$). It expresses the relative percentage change in schema-compliance pass rate between the unquantized baseline and its quantized counterpart, with the decoding settings held constant. This makes it possible to compare the structural effect of quantization without deliberately changing the generation procedure.
+
+We address three primary research questions:
+\begin{itemize}
+    \item \textbf{$RQ_1$ (Complexity Nonlinearity):} Is formatting drift ($D_{\text{formatting}}$) non-linearly amplified as target schema complexity increases from flat key-value pairs to nested hierarchies and array sequences?
+    \item \textbf{$RQ_2$ (Parameter Capacity Buffering Hypothesis):} Does scaling parameter capacity ($0.5\text{B} \rightarrow 1.5\text{B}$) buffer against post-training quantization formatting drift under identical execution parameters?
+    \item \textbf{$RQ_3$ (Surface vs. Structural Degradation):} What proportion of quantization drift stems from surface markdown code fence syntax additions versus inner schema structural corruption (\texttt{SYNTAX\_ERROR} / \texttt{SCHEMA\_FIELD\_MISMATCH})?
+\end{itemize}
+
+To answer these questions, we use a $2 \times 2$ experimental design. The two models, \texttt{Qwen2.5-0.5B-Instruct} and \texttt{Qwen2.5-1.5B-Instruct}, are each evaluated in unquantized $\text{FP16}$ and dynamic $\text{INT8}$ forms. The same set of $N=100$ prompts is used across the four conditions. The comparison allows us to examine both the effect of quantization and whether the larger model retains an advantage in schema compliance.
+
+% -------------------------------------------------------------------------
+% SECTION II: RELATED WORK
+% -------------------------------------------------------------------------
+\section{Related Work}
+
+\subsection{Structured LLM Generation and Schema Adherence}
+A common starting point for obtaining structured responses is to describe the required format in the prompt and provide examples. This approach is convenient, but it leaves the model free to generate any next token. As a result, the response may contain explanatory text, malformed JSON, or fields that do not match the requested schema. Grammar-constrained generation takes a different approach: it restricts the tokens that can be selected so that the output follows a specified structure. Outlines is an example of a guided-generation system that supports this kind of constraint \cite{outlines}. The experiments in this paper do not apply such external constraints; instead, they examine how well the instruction-tuned models follow the schema through ordinary generation.
+
+\subsection{Post-Training Quantization and Weight Precision}
+Post-training quantization (PTQ) reduces the precision used to represent model parameters after training. Lower-bit representations can reduce memory use and, depending on the hardware and implementation, improve inference efficiency. However, quantization can also introduce numerical error. Work such as SmoothQuant discusses the difficulty of handling activation outliers when quantizing large language models \cite{smoothquant}. The present study considers a narrower consequence: whether the dynamic quantization procedure used in our experiments affects an instruction-tuned model's ability to produce schema-valid output.
+
+\subsection{Parameter Scaling and Robustness}
+A larger model may have more representational capacity, but it does not automatically follow that it will be more robust to every form of compression. In this study, we test that possibility directly by comparing the $0.5\text{B}$ and $1.5\text{B}$ variants under the same quantization and decoding conditions. We refer to the expectation that the larger model will better retain schema compliance as the Parameter Capacity Buffering Hypothesis.
+
+% -------------------------------------------------------------------------
+% CONTEXTUAL FIGURES FROM THE PRELIMINARY REVIEW
+% -------------------------------------------------------------------------
+\section{Contextual Background on Observable LLM Drift}
+The experiments reported here focus specifically on formatting behaviour during local quantization. They form part of a broader concern with performance drift: an LLM's observable behaviour may change across versions or operating conditions, and formatting is only one dimension of that change. Other dimensions can include task capability, safety, and instruction-following. Longitudinal monitoring work, including studies such as ChatLog, motivates evaluating models repeatedly rather than relying on a single measurement. Research on concept drift offers terminology for describing changes in data and model behaviour over time \cite{tu2024,gama2014,lu2019}. The interpretation of evaluation results also depends on benchmark quality, since contamination can make measured performance appear stronger than it is \cite{aiyappa2023}. The figures in this section provide context from the preliminary review; they are not outputs of the quantization experiments conducted for this paper.
+
+\sourcefigure{prism-uploads/empirical_evidence.png}
+{Previously reported GPT-4 behavior changes from March to June 2023. The
+left panel summarizes the reported prime-number identification accuracy
+change; the right panel summarizes directional changes in sensitive-question
+responses, code execution, and multi-hop question answering \cite{chen2023,chen2024}.}
+{fig:source-empirical}
+
+\sourcefigure{prism-uploads/mechanism_dimension_flow.png}
+{Mechanism--dimension entanglement in LLM performance drift. The diagram
+summarizes candidate relationships between update mechanisms and observable
+drift dimensions; the links are illustrative rather than causal estimates.}
+{fig:source-mechanisms}
+
+\sourcefigure{prism-uploads/pdi_framework.png}
+{Overview of the Performance Drift Index measurement pipeline proposed in
+the preliminary review. It illustrates a general drift-monitoring workflow
+and is included as background, not as a metric computed in the present
+quantization experiment.}
+{fig:source-pdi}
+
+% -------------------------------------------------------------------------
+% SECTION III: METHODOLOGY
+% -------------------------------------------------------------------------
+\section{Methodology}
+
+\subsection{Formatting Drift Formalization}
+We use $P_{\text{base}} \in [0, 1]$ for the schema-compliance pass rate of the unquantized ($\text{FP16}$) model and $P_{\text{quant}} \in [0, 1]$ for the pass rate of its quantized ($\text{INT8}$) counterpart. Relative Formatting Drift, denoted by $D_{\text{formatting}}$, is calculated as follows:
+\begin{equation}
+D_{\text{formatting}} = \frac{P_{\text{quant}} - P_{\text{base}}}{P_{\text{base}}} \times 100\%
+\end{equation}
+
+\subsection{Dual-Pass Verification Engine}
+Rather than asking another language model to judge the responses, we use Python's \texttt{jsonschema} package to validate each completion against its Draft-07 schema \cite{jsonschema}. Every output is checked in two ways:
+\begin{enumerate}
+    \item \textbf{Pass 1 (Direct Raw Pass, $P_{\text{raw}}$):} Evaluates the exact completion string emitted by the model without post-processing.
+    \item \textbf{Pass 2 (Scrubbed Pass, $P_{\text{scrubbed}}$):} Applies regular expressions to extract JSON payloads wrapped within markdown code blocks (\texttt{```json ... ```}) prior to schema validation.
+\end{enumerate}
+
+Outputs failing both verification passes are assigned to a mutually exclusive failure category:
+\begin{itemize}
+    \item \texttt{SYNTAX\_ERROR}: Unparseable JSON syntax, unclosed brackets, conversational preambles, or truncated text.
+    \item \texttt{SCHEMA\_FIELD\_MISMATCH}: Valid JSON syntax that omits mandatory keys declared in the target schema.
+    \item \texttt{SCHEMA\_TYPE\_MISMATCH}: Valid JSON syntax containing required keys, but with incorrect value data types.
+\end{itemize}
+
+\subsection{Stratified Benchmark Dataset}
+The benchmark contains $N=100$ context--schema pairs. To examine whether the structure of the requested output matters, we divide the prompts into three tiers:
+\begin{itemize}
+    \item \textbf{Tier 1: Primitive Flat ($N_1 = 35$):} Flat key-value schemas containing basic primitive data types (\texttt{string}, \texttt{integer}, \texttt{boolean}).
+    \item \textbf{Tier 2: Nested Object ($N_2 = 35$):} Hierarchical structures containing multi-level nested sub-objects.
+    \item \textbf{Tier 3: Typed Array ($N_3 = 30$):} Homogeneous and heterogeneous array structures requiring sequential structure tracking.
+\end{itemize}
+
+\subsection{Statistical Significance Testing}
+We use a pooled two-proportion $Z$-test to assess the pass-rate difference between the baseline and quantized conditions. The significance level is set to $\alpha = 0.05$, and the test statistic is calculated as:
+\begin{equation}
+Z = \frac{P_{\text{quant}} - P_{\text{base}}}{\sqrt{P_{\text{pool}}(1 - P_{\text{pool}})\left(\frac{2}{N}\right)}}, \quad P_{\text{pool}} = \frac{P_{\text{base}} + P_{\text{quant}}}{2}
+\end{equation}
+
+% -------------------------------------------------------------------------
+% SECTION IV: EXPERIMENTAL SETUP
+% -------------------------------------------------------------------------
+\section{Experimental Setup}
+
+\subsection{Execution Environment and Hardware}
+We ran all experiments locally on a Windows workstation using its CPU. The machine had $15.44\text{ GB}$ of system RAM, and the models were executed with the native PyTorch runtime.
+
+\subsection{Model Selection and Quantization Control}
+The evaluation uses two instruction-tuned checkpoints from the Qwen2.5 family, which is described in the model's technical report \cite{qwen25}:
+\begin{enumerate}
+    \item \texttt{Qwen/Qwen2.5-0.5B-Instruct} ($0.49\text{B}$ parameters)
+    \item \texttt{Qwen/Qwen2.5-1.5B-Instruct} ($1.54\text{B}$ parameters)
+\end{enumerate}
+
+For the quantized conditions, we apply PyTorch dynamic quantization with \texttt{torch.ao.quantization.quantize\_dynamic}. The operation converts the weights of \texttt{torch.nn.Linear} layers to the \texttt{qint8} representation.
+
+\subsection{Decoding Hyperparameters}
+We kept the generation settings fixed across all four experimental conditions. Greedy decoding was used so that sampling did not introduce an additional source of variation:
+\begin{itemize}
+    \item Temperature ($T = 0.0$), Top-$p$ ($1.0$), \texttt{do\_sample = False}.
+    \item Deterministic Random Seed: Locked at $\text{seed} = 42$ across PyTorch, NumPy, and Python.
+    \item System Prompt: Fixed instruction enforcing JSON generation without markdown fencing or preambles.
+\end{itemize}
+
+% -------------------------------------------------------------------------
+% SECTION V: EMPIRICAL RESULTS AND DISCUSSION
+% -------------------------------------------------------------------------
+\section{Results and Discussion}
+
+\subsection{Full $2 \times 2$ Experimental Matrix}
+The results for all four model--precision combinations are reported in Table~\ref{tab:matrix_results}. Each condition was evaluated on the same $N=100$ benchmark prompts.
+
+
+\begin{table*}[!t]
+\caption{Full $2 \times 2$ Experimental Matrix Results ($N=100$, Seed=42, $T=0.0$)}
+\label{tab:matrix_results}
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}llccccccc@{}}
+\toprule
+\textbf{Model Scale} & \textbf{Precision} &
+\textbf{Raw Pass ($P_{\text{raw}}$)} &
+\textbf{Scrubbed Pass ($P_{\text{scrubbed}}$)} &
+\textbf{Semantic Acc ($P_{\text{semantic}}$)} &
+\textbf{$D_{\text{formatting}}$} &
+\textbf{$Z$-Statistic} &
+\textbf{$p$-value} &
+\textbf{Significance} \\
+\midrule
+Qwen2.5-0.5B & FP16 (Base) & $100.0\%$ & $100.0\%$ & $94.0\%$ & $0.0\%$ & --- & --- & Baseline \\
+Qwen2.5-0.5B & Dynamic INT8 & $0.0\%$ & $7.0\%$ & $0.0\%$ & \textbf{-93.0\%} & -13.1845 & $< 10^{-15}$ & \textbf{True} \\
+\midrule
+Qwen2.5-1.5B & FP16 (Base) & $100.0\%$ & $100.0\%$ & $100.0\%$ & $0.0\%$ & --- & --- & Baseline \\
+Qwen2.5-1.5B & Dynamic INT8 & $0.0\%$ & $0.0\%$ & $0.0\%$ & \textbf{-100.0\%} & -14.1421 & $< 10^{-15}$ & \textbf{True} \\
+\bottomrule
+\end{tabular}%
+}
+\end{table*}
+
+
+The two unquantized models both passed all schema checks. The picture changed after dynamic $\text{INT8}$ quantization: the $0.5\text{B}$ model had a formatting-drift value of $-93.0\%$ ($Z = -13.1845, p < 10^{-15}$), while the $1.5\text{B}$ model reached $-100.0\%$ ($Z = -14.1421, p < 10^{-15}$). Thus, under the conditions tested, the quantized models rarely or never produced outputs that passed the required structural checks.
+
+\subsection{Stratified Tier Breakdown ($RQ_1$)}
+Table~\ref{tab:tier_results} shows the scrubbed pass rate separately for each of the three schema-complexity tiers.
+
+\begin{table}[htbp]
+\caption{Stratified Scrubbed Pass Rate ($P_{\text{scrubbed}}$) Across Schema Complexity Tiers}
+\label{tab:tier_results}
+\centering
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Schema Complexity Tier} & \textbf{$N$} & \textbf{FP16 (Both)} & \textbf{0.5B-INT8} & \textbf{1.5B-INT8} \\ \midrule
+Tier 1: Primitive Flat & 35 & $100.0\%$ & $20.0\%$ & $0.0\%$ \\
+Tier 2: Nested Object & 35 & $100.0\%$ & $0.0\%$ & $0.0\%$ \\
+Tier 3: Typed Array & 30 & $100.0\%$ & $0.0\%$ & $0.0\%$ \\ \bottomrule
+\end{tabular}
+\end{table}
+
+The smaller quantized model retained some ability to produce valid flat objects: its scrubbed pass rate for Tier 1 was $20.0\%$. It did not pass any prompts in either the nested-object or typed-array tiers. The larger quantized model recorded a $0.0\%$ pass rate in all three tiers. These results show that the failures were not limited to the more elaborate schemas, although the smaller model's remaining successes were confined to the simplest tier.
+
+\subsection{Refutation of Parameter Capacity Buffering ($RQ_2$)}
+The FP16 results show a semantic-accuracy improvement as model size increases: the score rises from $94.0\%$ for the $0.5\text{B}$ model to $100.0\%$ for the $1.5\text{B}$ model. That advantage does not carry over to the quantized conditions. The larger model's scrubbed pass rate is $0.0\%$, compared with $7.0\%$ for the smaller model. In this experiment, therefore, increasing the parameter count did not protect schema compliance against dynamic $\text{INT8}$ quantization. The observed results do not support the Parameter Capacity Buffering Hypothesis.
+
+\subsection{Qualitative Failure Diagnostics ($RQ_3$)}
+We examined the failed outputs from the $\text{INT8}$ runs and assigned each to a failure category. The analysis covered $N=193$ failures and produced the following distribution:
+\begin{enumerate}
+    \item \textbf{Syntax Errors ($67.9\%$, $131/193$):} Unparseable outputs dominated by conversational preambles (e.g., \texttt{Assistant:}, \texttt{Question:... Answer:...}), markdown bullet lists, stray HTML artifacts (\texttt{</pre>}), and truncated token sequences (\texttt{'JSON:'}).
+    \item \textbf{Schema Field Mismatches ($31.6\%$, $61/193$):} Valid JSON outputs that echoed the JSON Schema definition template rather than populating extracted data instances.
+    \item \textbf{Schema Type Mismatches ($0.5\%$, $1/193$):} Valid JSON instances containing required keys but with invalid value data types.
+\end{enumerate}
+
+The failure examples are consistent with substantial changes in how the quantized models respond to the instruction and construct the requested output. One possible explanation is that quantization error in linear-layer projections affects attention and, in turn, the model's ability to maintain the intended response format. The present experiment does not isolate this mechanism, however, so attention-routing collapse and loss of system-prompt control should be treated as interpretations rather than directly measured causes. This distinction is important: observing output drift does not, by itself, establish which internal change produced it \cite{chen2021,chen2023}.
+
+% -------------------------------------------------------------------------
+% SECTION VI: LIMITATIONS
+% -------------------------------------------------------------------------
+\section{Limitations}
+
+The findings should be interpreted in light of several limitations:
+\begin{enumerate}
+    \item \textbf{Quantization Method Scope:} Evaluation was limited to PyTorch dynamic CPU quantization (\texttt{torch.ao.quantization.quantize\_dynamic}). Findings should not be extrapolated to static block-wise quantization formats (e.g., GGUF \texttt{Q4\_K\_M}) or quantization-aware training (QAT).
+    \item \textbf{Sample Size and Diversity:} The evaluation benchmark comprised $N=100$ prompts evaluated on two models within the \texttt{Qwen2.5-Instruct} family.
+    \item \textbf{Metric Scope:} Pass rates ($P_{\text{raw}}, P_{\text{scrubbed}}$) evaluate JSON schema compliance and do not measure broader factual reasoning capabilities.
+\end{enumerate}
+
+% -------------------------------------------------------------------------
+% SECTION VII: CONCLUSION AND FUTURE WORK
+% -------------------------------------------------------------------------
+\section{Conclusion and Future Work}
+The experiments show that schema compliance can be severely affected when the evaluated small instruction-tuned models are converted to dynamic $\text{INT8}$. Both models performed perfectly on the structural checks in FP16, but their quantized versions showed formatting drift of at least $93.0\%$ in magnitude ($D_{\text{formatting}} \le -93.0\%, p < 10^{-15}$). The larger model did not retain better structural compliance after quantization. Within the limits of this setup, model size alone was therefore not enough to prevent the observed failures.
+
+Several follow-up experiments would help establish how broadly these findings apply:
+\begin{enumerate}
+    \item \textbf{GGUF/Block-Wise Quantization Benchmark:} Evaluate static calibrated formats (GGUF \texttt{Q8\_0}, \texttt{Q4\_K\_M}) to isolate dynamic quantization artifacts.
+    \item \textbf{Grammar-Constrained Decoding Intervention:} Test whether logit-masking engines (e.g., Outlines) restore $100\%$ compliance under $\text{INT8}$ without latency overhead.
+    \item \textbf{Quantization-Aware Training (QAT):} Investigate whether fine-tuning models under quantization constraints prevents attention routing collapse.
+\end{enumerate}
+
+% -------------------------------------------------------------------------
+% ACKNOWLEDGMENTS
+% -------------------------------------------------------------------------
+\section*{Acknowledgments}
+The authors acknowledge the institutional and computational resources used to conduct this work. Any funding or additional laboratory support should be specified here, if applicable.
+
+% -------------------------------------------------------------------------
+% BIBLIOGRAPHY
+% -------------------------------------------------------------------------
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
