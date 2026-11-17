@@ -1,7 +1,7 @@
 # Research Decisions, Literature Mapping, and Protocol Rationale
 
 **Project:** Empirical Investigation of Formatting Drift ($D_{\text{formatting}}$) in Quantized Small Language Models  
-**Author:** Vedartha Sai Y (IIITA)  
+**Author:** Pasupuleti Gnana Venkata Koushik (IIITA)  
 **Document Status:** Finalized / Publication-Ready
 
 ---
